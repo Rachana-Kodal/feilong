@@ -4651,6 +4651,78 @@ class SMTClient(object):
         LOG.debug("get_pcif_list: found %d PCIF entries" % len(pcif_list))
         return pcif_list
 
+    def _vmcp_pcif(self, userid, pcif, attach):
+        """Attach/detach a PCI function to/from an active guest via vmcp."""
+        rh = ReqHandle(smt=self._smt, captureLogs=False)
+        handler = VMCPHandler(rh)
+        if attach:
+            rc = handler.attach_pcif(pcif, userid)
+        else:
+            rc = handler.detach_pcif(pcif, userid)
+        if rc != 0:
+            results = rh.results
+            results.pop('logEntries', None)
+            msg = ("Failed to %s pcif %s %s guest %s via vmcp. Results: %s"
+                   % ('attach' if attach else 'detach', pcif,
+                      'to' if attach else 'from', userid, str(results)))
+            LOG.error(msg)
+            raise exception.SDKSMTRequestFailed(results, msg)
+
+    def _update_pcif_in_user_direct(self, userid, pcif, user_direct, attach):
+        """Add/remove the 'COMMAND ATTACH PCIF <pcif> * AS <pcif>' statement
+        (the same statement makevm writes at guest creation) in the user
+        directory of the guest."""
+        statement = "COMMAND ATTACH PCIF %s * AS %s" % (pcif, pcif)
+        # Regex to match any existing COMMAND ATTACH PCIF entry for this specific PCIF,
+        # handling case insensitivity and whitespace variations
+        pattern = re.compile(r'^COMMAND\s+ATTACH\s+PCIF\s+%s\s+\*\s+AS\s+'
+                             % pcif, re.IGNORECASE)
+        new_direct = [ent for ent in user_direct if not pattern.match(ent)]
+        if attach:
+            idx = 1
+            for i, ent in enumerate(new_direct):
+                if ent.upper().startswith('COMMAND '):
+                    idx = i + 1
+            new_direct.insert(idx, statement)
+        action = "update pcif %s in user directory of '%s'" % (pcif, userid)
+        with zvmutils.log_and_reraise_smt_request_failed(action):
+            self._lock_user_direct(userid)
+            self._replace_user_direct(userid, new_direct)
+
+    def attach_pcif(self, userid, pcif, active=False):
+        """Attach a PCI function to the guest: add it to the user directory
+        and, if active, attach it to the running guest."""
+        if active:
+            self._is_active(userid)
+        user_direct = self.get_user_direct(userid)
+        self._update_pcif_in_user_direct(userid, pcif, user_direct, True)
+        if active:
+            try:
+                self._vmcp_pcif(userid, pcif, True)
+            except exception.SDKSMTRequestFailed:
+                self._revert_user_direct(userid, user_direct)
+                raise
+        LOG.info("PCIF %s attached to guest %s" % (pcif, userid))
+
+    def detach_pcif(self, userid, pcif, active=False):
+        """Detach a PCI function from the guest: detach it from the running
+        guest if active, then remove it from the user directory."""
+        if active:
+            self._is_active(userid)
+            self._vmcp_pcif(userid, pcif, False)
+        self._update_pcif_in_user_direct(
+            userid, pcif, self.get_user_direct(userid), False)
+        self._NetDbOperator.switch_delete_record_for_nic(userid, pcif)
+        LOG.info("PCIF %s detached from guest %s" % (pcif, userid))
+
+    def add_pcif_nic_record(self, userid, pcif, nic_id):
+        """Record the neutron port of a NETH nic in the switch table so it
+        can be mapped back to its pcif when the interface is detached."""
+        for rec in self._NetDbOperator.switch_select_record_for_userid(userid):
+            if rec['interface'].upper() == pcif.upper():
+                return
+        self._NetDbOperator.switch_add_record(userid, pcif, port=nic_id,
+                                              switch='PCIF', comments='PCIF')
 
 class FilesystemBackend(object):
     @classmethod
