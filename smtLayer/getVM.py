@@ -19,6 +19,7 @@
 
 import re
 import subprocess
+import time
 
 from smtLayer import generalUtils
 from smtLayer import msgs
@@ -307,7 +308,7 @@ def getDirectory(rh):
     parms = ["-T", rh.userid]
     results = invokeSMCLI(rh, "Image_Query_DM", parms)
     if results['overallRC'] == 0:
-        results['response'] = re.sub('\*DVHOPT.*', '', results['response'])
+        results['response'] = re.sub(r'\*DVHOPT.*', '', results['response'])
         rh.printLn("N", results['response'])
     else:
         # SMAPI API failed.
@@ -335,7 +336,7 @@ def getAllDirectory(rh):
     parms = []
     results = invokeSMCLI(rh, "Image_Name_Query_DM", parms)
     if results['overallRC'] == 0:
-        results['response'] = re.sub('\*DVHOPT.*', '', results['response'])
+        results['response'] = re.sub(r'\*DVHOPT.*', '', results['response'])
         rh.printLn("N", results['response'])
     else:
         # SMAPI API failed.
@@ -701,3 +702,96 @@ def fcpinfo(rh):
             rh.updateResults(results)
 
     return rh.results['overallRC']
+
+
+def getNethIntInfo(rh):
+    """
+    Find the network interface name configured on the PCI device (Network
+    Express adapter) assigned to the instance userid.
+
+    Searches /sys/bus/pci/devices/ inside the guest via IUCV without
+    requiring external tools like lspci.
+
+    Input:
+       Request Handle with the following properties:
+          function    - 'GETVM'
+          subfunction - 'NETHINTERFACEINFO'
+          userid      - userid of the virtual machine
+          parms['pcif'] - PCI function ID of the Network Express adapter
+                          attached to the guest (e.g. "00000110")
+
+    Output:
+       Request Handle updated with the results.
+       On success, results['response'] contains the interface name
+       (e.g. "enc112").
+       Return code - 0: ok, non-zero: error
+    """
+    rh.printSysLog("Enter getVM.getNethIntInfo, userid: " + rh.userid)
+    pcif = rh.parms.get("pcif") or (rh.request[3] if len(rh.request) > 3 else "")
+    if not pcif:
+        rh.printSysLog("getVM.getNethIntInfo: no pcif specified")
+        rh.updateResults({"overallRC": 4, "rc": 4, "rs": 99})
+        return 4
+
+    pcif_clean = str(pcif).lower().strip()
+    pcif_short = pcif_clean[-4:]
+
+    strCmd = (
+        'for d in /sys/bus/pci/devices/*; do '
+        'fid=""; [ -f "$d/function_id" ] && fid=$(cat "$d/function_id" 2>/dev/null); '
+        'b=$(basename "$d" | tr "[:upper:]" "[:lower:]"); '
+        'fid_l=$(echo "$fid" | tr "[:upper:]" "[:lower:]"); '
+        'if [ "$fid_l" = "0x%(pcif)s" ] || [ "$fid_l" = "0x%(short)s" ] || '
+        '[ "$fid_l" = "%(pcif)s" ] || [ "$fid_l" = "%(short)s" ] || '
+        'echo "$b" | grep -q "%(short)s"; then '
+        'if [ -d "$d/net" ]; then '
+        'intf=$(ls "$d/net" 2>/dev/null | head -n 1); '
+        '[ -n "$intf" ] && echo "$intf" && exit 0; '
+        'fi; fi; done; exit 1'
+    ) % {'pcif': pcif_clean, 'short': pcif_short}
+
+    max_retries = 5
+    for attempt in range(max_retries):
+        results = execCmdThruIUCV(rh, rh.userid, strCmd)
+        if results['overallRC'] == 0 and results.get('response'):
+            for line in results['response'].splitlines():
+                line = line.strip()
+                if line:
+                    rh.printLn("N", line)
+                    rh.updateResults({"overallRC": 0, "rc": 0, "rs": 0})
+                    rh.printSysLog(
+                        "getVM.getNethIntInfo: found interface %s for pcif %s"
+                        % (line, pcif))
+                    return 0
+        if attempt < max_retries - 1:
+            time.sleep(1)
+
+    # Fallback: check via lspci if installed
+    strCmd_lspci = "lspci -D 2>/dev/null"
+    results_lspci = execCmdThruIUCV(rh, rh.userid, strCmd_lspci)
+    if results_lspci['overallRC'] == 0 and results_lspci.get('response'):
+        pci_addr = ""
+        for line in results_lspci['response'].splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            addr_token = line.split()[0].lower()
+            if pcif_short in addr_token:
+                pci_addr = addr_token
+                break
+        if pci_addr:
+            strCmd_net = "ls /sys/bus/pci/devices/%s/net 2>/dev/null" % pci_addr
+            results_net = execCmdThruIUCV(rh, rh.userid, strCmd_net)
+            if results_net['overallRC'] == 0 and results_net.get('response'):
+                for line in results_net['response'].splitlines():
+                    line = line.strip()
+                    if line:
+                        rh.printLn("N", line)
+                        rh.updateResults({"overallRC": 0, "rc": 0, "rs": 0})
+                        return 0
+
+    rh.printSysLog(
+        "getVM.getNethIntInfo: no interface found for pcif %s on %s"
+        % (pcif, rh.userid))
+    rh.updateResults({"overallRC": 4, "rc": 4, "rs": 99})
+    return 4

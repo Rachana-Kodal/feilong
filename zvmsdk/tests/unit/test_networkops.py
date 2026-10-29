@@ -21,6 +21,7 @@ import shutil
 from zvmsdk.tests.unit import base
 from zvmsdk import dist
 from zvmsdk import networkops
+from zvmsdk import exception
 
 
 class SDKNetworkOpsTestCase(base.SDKTestCase):
@@ -293,3 +294,22 @@ class SDKNetworkOpsTestCase(base.SDKTestCase):
                                      active=True)
         dedicate_OSA.assert_called_with("fakeid", 'F000', vdev='1000',
                                         active=True)
+
+    @mock.patch('zvmsdk.smtclient.SMTClient.detach_pcif')
+    @mock.patch('zvmsdk.smtclient.SMTClient.get_neth_interface_info')
+    def test_zdirect_delete_network_configuration_guest_cmd_failed(
+            self, intf_info, detach_pcif):
+        # the pcif must still be detached if the guest can not be cleaned
+        intf_info.side_effect = exception.SDKInternalError(msg="fake")
+        self.networkops.zdirect_delete_network_configuration(
+            "fakeid", '00000112', active=True)
+        detach_pcif.assert_called_with("fakeid", '00000112', active=True)
+
+    def test_zdirect_network_configuration_hot_attach(self):
+        execute_cmd, reboot = self._zdirect_config(False)
+        reboot.assert_not_called()
+        cmd = execute_cmd.call_args[0][1]
+        # ifup when available, NetworkManager otherwise (RHEL 8 and later)
+        self.assertIn('ifup enc112', cmd)
+        self.assertIn('nmcli connection reload', cmd)
+        self.assertIn('nmcli device connect enc112', cmd)

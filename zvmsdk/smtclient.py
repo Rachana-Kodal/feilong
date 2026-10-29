@@ -2346,6 +2346,9 @@ class SMTClient(object):
                                     couple_err=msg1, revoke_err=msg2)
 
         """Update information in switch table."""
+        for r in self._NetDbOperator.switch_select_record_for_userid(userid):
+            if r['interface'].upper() == vdev.upper() and r.get('comments') == 'PCIF':
+                return
         self._NetDbOperator.switch_update_record_with_switch(userid, vdev,
                                                              vswitch_name)
         msg = ('Couple nic device %(vdev)s of guest %(vm)s '
@@ -2357,6 +2360,13 @@ class SMTClient(object):
                               vswitch_name, active=False,
                               vlan_id=-1, port_type='ACCESS'):
         """Couple nic to vswitch."""
+        for r in self._NetDbOperator.switch_select_record_for_userid(userid):
+            if r['interface'].upper() == nic_vdev.upper() and (
+                    r.get('comments') == 'PCIF' or r.get('switch') == 'PCIF'):
+                LOG.info("Device %(vdev)s of guest %(vm)s is a PCIF device, "
+                         "skipping vswitch coupling.",
+                         {'vdev': nic_vdev, 'vm': userid})
+                return
         if active:
             msg = ("both in the user direct of guest %s and on "
                    "the active guest system" % userid)
@@ -2523,6 +2533,13 @@ class SMTClient(object):
 
     def uncouple_nic_from_vswitch(self, userid, nic_vdev,
                                   active=False):
+        for r in self._NetDbOperator.switch_select_record_for_userid(userid):
+            if r['interface'].upper() == nic_vdev.upper() and (
+                    r.get('comments') == 'PCIF' or r.get('switch') == 'PCIF'):
+                LOG.info("Device %(vdev)s of guest %(vm)s is a PCIF device, "
+                         "skipping vswitch uncoupling.",
+                         {'vdev': nic_vdev, 'vm': userid})
+                return
         if active:
             msg = ("both in the user direct of guest %s and on "
                    "the active guest system" % userid)

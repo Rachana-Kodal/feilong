@@ -411,6 +411,20 @@ def req_guest_delete_network_interface(start_index, *args, **kwargs):
     return url, body
 
 
+def req_guest_attach_pcif(start_index, *args, **kwargs):
+    url = '/guests/%s/pcif'
+    body = {'info': {'pcif': args[start_index]}}
+    fill_kwargs_in_body(body['info'], **kwargs)
+    return url, body
+
+
+def req_guest_detach_pcif(start_index, *args, **kwargs):
+    url = '/guests/%s/pcif'
+    body = {'info': {'pcif': args[start_index]}}
+    fill_kwargs_in_body(body['info'], **kwargs)
+    return url, body
+
+
 def req_guest_get_power_state(start_index, *args, **kwargs):
     url = '/guests/%s/power_state'
     body = None
@@ -948,6 +962,16 @@ DATABASE = {
         'args_optional': 1,
         'params_path': 1,
         'request': req_guest_delete_network_interface},
+    'guest_attach_pcif': {
+        'method': 'POST',
+        'args_required': 2,
+        'params_path': 1,
+        'request': req_guest_attach_pcif},
+    'guest_detach_pcif': {
+        'method': 'DELETE',
+        'args_required': 2,
+        'params_path': 1,
+        'request': req_guest_detach_pcif},
     'guest_get_power_state': {
         'method': 'GET',
         'args_required': 1,
